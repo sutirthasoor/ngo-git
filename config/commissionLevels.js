@@ -121,3 +121,53 @@ export const getPrimaryCommission = (levelId) => {
 export const getLevelDetails = (levelId) => {
   return LEVELS[levelId] || LEVELS["I"];
 };
+// ============ PROGRESS & PROMOTION HELPERS ============
+
+export const getLevelProgress = (levelId, totalDonations = 0) => {
+  const current = getLevelDetails(levelId);
+  if (!current) {
+    return {
+      progress: 0, nextLevel: null, nextLevelTitle: null,
+      remainingDonations: 0, donationProgress: 0, requiredDonations: 0,
+    };
+  }
+  if (!current.nextLevel) {
+    return {
+      progress: 100, nextLevel: null, nextLevelTitle: null,
+      remainingDonations: 0, donationProgress: 100, requiredDonations: 0,
+    };
+  }
+  const next = getLevelDetails(current.nextLevel);
+  const requiredDonations = next?.minDonations ?? current.donationsRequiredForPromotion ?? 0;
+  const donationProgress = requiredDonations > 0
+    ? Math.min((totalDonations / requiredDonations) * 100, 100)
+    : 100;
+
+  return {
+    progress: donationProgress,
+    nextLevel: current.nextLevel,
+    nextLevelTitle: next?.title || current.nextLevel,
+    remainingDonations: requiredDonations > 0 ? Math.max(0, requiredDonations - totalDonations) : 0,
+    donationProgress,
+    requiredDonations,
+  };
+};
+
+export const isEligibleForPromotion = (levelId, totalDonations = 0) => {
+  const current = getLevelDetails(levelId);
+  if (!current || !current.nextLevel) return false;
+  const next = getLevelDetails(current.nextLevel);
+  const required = next?.minDonations ?? 0;
+  return required > 0 && totalDonations >= required;
+};
+
+export const getPromotionRequirements = (levelId) => {
+  const current = getLevelDetails(levelId);
+  if (!current || !current.nextLevel) return null;
+  const next = getLevelDetails(current.nextLevel);
+  return {
+    nextLevel: current.nextLevel,
+    nextLevelTitle: next?.title || current.nextLevel,
+    requiredDonations: next?.minDonations ?? 0,
+  };
+};

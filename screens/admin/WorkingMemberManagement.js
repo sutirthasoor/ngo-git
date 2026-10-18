@@ -156,7 +156,31 @@ export default function WorkingMemberManagement() {
 const [showPassword, setShowPassword] = useState(false);
   const [memberHierarchy, setMemberHierarchy] = useState([]);
   const [loadingHierarchy, setLoadingHierarchy] = useState(false);
-  
+    // ===== Tree (upline + downline) =====
+  const [treeData, setTreeData] = useState({ upline: [], self: null, downline: [] });
+  const [treeLoading, setTreeLoading] = useState(false);
+
+  // ===== Per-node detail modal =====
+  const [nodeDetailVisible, setNodeDetailVisible] = useState(false);
+  const [nodeDetailLoading, setNodeDetailLoading] = useState(false);
+  const [nodeDetailData, setNodeDetailData] = useState(null);
+  const [nodeDetailCommission, setNodeDetailCommission] = useState({ total: 0, pending: 0, donation: 0 });
+  const [nodeDetailDonations, setNodeDetailDonations] = useState(0);
+  const [nodeDetailRegistered, setNodeDetailRegistered] = useState([]);
+  const [nodeDetailUpline, setNodeDetailUpline] = useState([]);
+  const [nodeDetailSearch, setNodeDetailSearch] = useState('');
+  // ===== Edit working member =====
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editingMember, setEditingMember] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editForm, setEditForm] = useState({
+    fullName: '', email: '', phone: '', gender: '', dob: '',
+    fatherName: '', motherName: '', aadharNumber: '', panNumber: '',
+    address: '', village: '', postOffice: '', thana: '', district: '',
+    state: '', pinCode: '', position: '', department: '', employeeId: '',
+    reportingTo: '', role: 'working', status: 'active', level: 'I',
+    profilePhoto: '', parentId: '', parentName: '',
+  });
   // Refs for capturing views
   const idCardRef = useRef(null);
   const certificateRefs = useRef({});
@@ -393,179 +417,311 @@ const fetchDirectMembersData = async (memberIds) => {
   // ============ LOAD HIERARCHY FUNCTION (ENHANCED) ============
 // ============ LOAD HIERARCHY FUNCTION (FIXED) ============
 // ============ LOAD HIERARCHY FUNCTION (FIXED) ============
-const loadMemberHierarchy = async (member) => {
-  setLoadingHierarchy(true);
-  try {
-    const hierarchy = [];
-    const visited = new Set();
-    
-    // Start with the current member - use the passed member object
-    const rootMember = {
-      id: member.id,
-      fullName: member.fullName || 'Unknown',
-      level: member.level || 'I',
-      levelName: getLevelLabel(member.level || 'I'),
-      isCurrent: true,
-      phone: member.phone || '',
+  const loadMemberTree = async (member) => {
+    setTreeLoading(true);
+    try {
+      const levelsToUse = dynamicLevels.length > 0 ? dynamicLevels : getDefaultLevels();
+
+      // --- UPLINE (walk parentId upward) ---
+      const upline = [];
+      let cur = member.parentId || null;
+      let safety = 0;
+      while (cur && safety < 50) {
+        safety++;
+        const snap = await getDoc(doc(db, 'users', cur));
+        if (!snap.exists()) break;
+        const d = snap.data();
+        upline.push({
+          id: cur, ...d,
+          levelName: getLevelLabel(d.level, levelsToUse),
+          levelColor: getLevelColor(d.level),
+        });
+        cur = d.parentId || null;
+      }
+      upline.reverse();
+
+      // --- DOWNLINE (recursive) ---
+      const visited = new Set([member.id]);
+      const buildChildren = async (parentId, depth = 0) => {
+        if (depth > 10) return [];
+        try {
+          const snap = await getDocs(
+            query(
+              collection(db, 'users'),
+              where('parentId', '==', parentId),
+              where('role', 'in', ['working', 'workingMember'])
+            )
+          );
+          const children = [];
+          for (const childDoc of snap.docs) {
+            if (visited.has(childDoc.id)) continue;
+            visited.add(childDoc.id);
+            const cd = childDoc.data();
+
+            let registeredCount = 0;
+            try {
+              const regSnap = await getDocs(
+                query(collection(db, 'users'), where('registeredBy', '==', childDoc.id))
+              );
+              regSnap.forEach(r => {
+                const rd = r.data();
+                if (rd.role !== 'working' && rd.role !== 'workingMember') registeredCount++;
+              });
+            } catch (_) {}
+
+            children.push({
+              id: childDoc.id, ...cd,
+              levelName: getLevelLabel(cd.level, levelsToUse),
+              levelColor: getLevelColor(cd.level),
+              depth: depth + 1,
+              registeredCount,
+              children: await buildChildren(childDoc.id, depth + 1),
+            });
+          }
+          return children;
+        } catch (e) {
+          console.warn('buildChildren:', e);
+          return [];
+        }
+      };
+
+      const downline = await buildChildren(member.id, 0);
+
+      // --- Self registered members ---
+      const selfRegistered = [];
+      try {
+        const regSnap = await getDocs(
+          query(collection(db, 'users'), where('registeredBy', '==', member.id))
+        );
+        regSnap.forEach(r => {
+          const rd = r.data();
+          if (rd.role !== 'working' && rd.role !== 'workingMember') {
+            selfRegistered.push({ id: r.id, ...rd });
+          }
+        });
+      } catch (_) {}
+
+      const selfNode = {
+        ...member,
+        levelName: getLevelLabel(member.level, levelsToUse),
+        levelColor: getLevelColor(member.level),
+        registeredCount: selfRegistered.length,
+        children: downline,
+      };
+
+      setTreeData({ upline, self: selfNode, downline });
+    } catch (e) {
+      console.error('loadMemberTree:', e);
+      setTreeData({ upline: [], self: member, downline: [] });
+    } finally {
+      setTreeLoading(false);
+    }
+  };
+  const openNodeDetail = async (node) => {
+    setNodeDetailVisible(true);
+    setNodeDetailLoading(true);
+    setNodeDetailData(node);
+    setNodeDetailCommission({ total: 0, pending: 0, donation: 0 });
+    setNodeDetailDonations(0);
+    setNodeDetailRegistered([]);
+    setNodeDetailUpline([]);
+    setNodeDetailSearch('');
+
+    try {
+      // Upline
+      const upline = [];
+      let cur = node.parentId || null;
+      let safety = 0;
+      while (cur && safety < 50) {
+        safety++;
+        const snap = await getDoc(doc(db, 'users', cur));
+        if (!snap.exists()) break;
+        const d = snap.data();
+        upline.push({ id: cur, ...d });
+        cur = d.parentId || null;
+      }
+      upline.reverse();
+      setNodeDetailUpline(upline);
+
+      // Registered members
+      try {
+        const regSnap = await getDocs(
+          query(collection(db, 'users'), where('registeredBy', '==', node.id))
+        );
+        const regList = [];
+        regSnap.forEach(r => {
+          const rd = r.data();
+          if (rd.role !== 'working' && rd.role !== 'workingMember') {
+            regList.push({ id: r.id, ...rd });
+          }
+        });
+        setNodeDetailRegistered(regList);
+      } catch (_) {}
+
+      // Commission
+      let total = 0, pending = 0, donation = 0;
+      try {
+        const commSnap = await getDocs(
+          query(collection(db, 'walletTransactions'), where('userId', '==', node.id))
+        );
+        commSnap.forEach(c => {
+          const d = c.data();
+          const t = d.type || '';
+          const isComm =
+            t.includes('commission') || t === 'direct_commission' ||
+            t === 'secondary_commission' || t === 'primary_commission';
+          if (!isComm) return;
+          if (d.status === 'paid' || d.status === 'completed') {
+            total += d.amount || 0;
+            if ((d.description || '').toLowerCase().includes('donation')) donation += d.amount || 0;
+          } else if (d.status === 'pending') {
+            pending += d.amount || 0;
+          }
+        });
+      } catch (_) {}
+      setNodeDetailCommission({ total, pending, donation });
+
+      // Donations made
+      try {
+        const donSnap = await getDocs(
+          query(collection(db, 'donations'), where('memberId', '==', node.id))
+        );
+        let t = 0;
+        donSnap.forEach(dd => { t += dd.data().amount || 0; });
+        setNodeDetailDonations(t);
+      } catch (_) {}
+    } catch (e) {
+      console.error('openNodeDetail:', e);
+    } finally {
+      setNodeDetailLoading(false);
+    }
+  };
+  // ================================================================
+  // EDIT: open + save
+  // ================================================================
+  const openEditMember = (member) => {
+    setEditingMember(member);
+    setEditForm({
+      fullName: member.fullName || '',
       email: member.email || '',
-      status: member.status || 'active',
-      childrenIds: member.childrenIds || [],
-      depth: 0,
-      parentId: member.parentId || null,
-      childrenCount: 0,
-      children: [],
-      registeredMembersList: member.registeredMembersList || [],
-      // Add all fields from the member
-      address: member.address || '',
-      fatherName: member.fatherName || '',
-      dob: member.dob || '',
-      aadharNumber: member.aadharNumber || '',
+      phone: member.phone || '',
       gender: member.gender || '',
-      state: member.state || '',
-      pinCode: member.pinCode || '',
+      dob: member.dob || '',
+      fatherName: member.fatherName || '',
+      motherName: member.motherName || '',
+      aadharNumber: member.aadharNumber || '',
+      panNumber: member.panNumber || '',
+      address: member.address || '',
       village: member.village || '',
       postOffice: member.postOffice || '',
       thana: member.thana || '',
       district: member.district || '',
-      directCommission: member.directCommission || 0,
-      secondaryCommission: member.secondaryCommission || 0,
-      totalEarned: member.totalEarned || 0,
-      pendingCommission: member.pendingCommission || 0,
-      walletBalance: member.walletBalance || 0,
-      totalDonations: member.totalDonations || 0,
-      promotionEligible: member.promotionEligible || false,
-      profilePhoto: member.profilePhoto || null,
-      directReferralCount: member.directReferralCount || 0,
-      createdAt: member.createdAt || '',
-      updatedAt: member.updatedAt || ''
-    };
-    
-    hierarchy.push(rootMember);
-    visited.add(member.id);
-    
-    // Recursively fetch children
-    const fetchChildren = async (parentId, parentObj, depth) => {
+      state: member.state || '',
+      pinCode: member.pinCode || '',
+      position: member.position || '',
+      department: member.department || '',
+      employeeId: member.employeeId || '',
+      reportingTo: member.reportingTo || '',
+      role: member.role || 'working',
+      status: member.status || 'active',
+      level: member.level || 'I',
+      profilePhoto: member.profilePhoto || '',
+      parentId: member.parentId || '',
+      parentName: member.parentName || '',
+    });
+    setEditModalVisible(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingMember) return;
+    if (!editForm.fullName.trim()) {
+      Alert.alert('Validation', 'Full name is required');
+      return;
+    }
+    if (!editForm.email.trim()) {
+      Alert.alert('Validation', 'Email is required');
+      return;
+    }
+
+    setSavingEdit(true);
+    try {
+      // Look up new level's commission rates if level changed
+      const levelsToUse = dynamicLevels.length > 0 ? dynamicLevels : getDefaultLevels();
+      const newLevelData = levelsToUse.find(l => l.id === editForm.level);
+
+      const payload = {
+        fullName: editForm.fullName.trim(),
+        email: editForm.email.trim().toLowerCase(),
+        phone: editForm.phone.trim(),
+        gender: editForm.gender,
+        dob: editForm.dob,
+        fatherName: editForm.fatherName.trim(),
+        motherName: editForm.motherName.trim(),
+        aadharNumber: editForm.aadharNumber.trim(),
+        panNumber: editForm.panNumber.trim(),
+        address: editForm.address.trim(),
+        village: editForm.village.trim(),
+        postOffice: editForm.postOffice.trim(),
+        thana: editForm.thana.trim(),
+        district: editForm.district.trim(),
+        state: editForm.state.trim(),
+        pinCode: editForm.pinCode.trim(),
+        position: editForm.position.trim(),
+        department: editForm.department.trim(),
+        employeeId: editForm.employeeId.trim(),
+        reportingTo: editForm.reportingTo.trim(),
+        role: editForm.role,
+        status: editForm.status,
+        level: editForm.level,
+        profilePhoto: editForm.profilePhoto,
+        parentId: editForm.parentId || null,
+        parentName: editForm.parentName || null,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (newLevelData) {
+        payload.directCommission = newLevelData.directCommission || 0;
+        payload.secondaryCommission = newLevelData.secondaryCommission || 0;
+      }
+
+      // Write to users/{uid}
+      await updateDoc(doc(db, 'users', editingMember.id), payload);
+
+      // Keep registeredMembers in sync if this doc exists
       try {
-        // Query users where parentId matches
-        const q = query(
-          collection(db, 'users'),
-          where('parentId', '==', parentId),
-          where('role', 'in', ['working', 'workingMember'])
+        const rmSnap = await getDocs(
+          query(collection(db, 'registeredMembers'), where('memberId', '==', editingMember.id))
         );
-        const snapshot = await getDocs(q);
-        
-        const childrenList = [];
-        for (const doc of snapshot.docs) {
-          const data = doc.data();
-          if (!visited.has(doc.id)) {
-            // Check if this member exists in workingMembers for complete data
-            const existingMember = workingMembers.find(m => m.id === doc.id);
-            
-            // Use existing member data if available, otherwise use data from Firestore
-            const memberData = existingMember || data;
-            
-            // Fetch registered members for this child
-            const registeredQuery = query(
-              collection(db, 'users'),
-              where('registeredBy', '==', doc.id)
-            );
-            const registeredSnap = await getDocs(registeredQuery);
-            const registeredList = [];
-            registeredSnap.forEach((regDoc) => {
-              const regData = regDoc.data();
-              if (regData.role !== 'working' && regData.role !== 'workingMember') {
-                registeredList.push({ id: regDoc.id, ...regData });
-              }
-            });
-            
-            const child = {
-              id: doc.id,
-              fullName: memberData.fullName || data.fullName || data.name || 'Unknown',
-              level: memberData.level || data.level || 'I',
-              levelName: getLevelLabel(memberData.level || data.level || 'I'),
-              isCurrent: false,
-              phone: memberData.phone || data.phone || '',
-              email: memberData.email || data.email || '',
-              status: memberData.status || data.status || 'active',
-              childrenIds: memberData.childrenIds || data.childrenIds || [],
-              depth: depth + 1,
-              parentId: parentId,
-              childrenCount: 0,
-              children: [],
-              registeredMembersList: registeredList,
-              // Add all fields
-              address: memberData.address || data.address || '',
-              fatherName: memberData.fatherName || data.fatherName || '',
-              dob: memberData.dob || data.dob || '',
-              aadharNumber: memberData.aadharNumber || data.aadharNumber || '',
-              gender: memberData.gender || data.gender || '',
-              state: memberData.state || data.state || '',
-              pinCode: memberData.pinCode || data.pinCode || '',
-              village: memberData.village || data.village || '',
-              postOffice: memberData.postOffice || data.postOffice || '',
-              thana: memberData.thana || data.thana || '',
-              district: memberData.district || data.district || '',
-              directCommission: memberData.directCommission || data.directCommission || 0,
-              secondaryCommission: memberData.secondaryCommission || data.secondaryCommission || 0,
-              totalEarned: memberData.totalEarned || data.totalEarned || 0,
-              pendingCommission: memberData.pendingCommission || data.pendingCommission || 0,
-              walletBalance: memberData.walletBalance || data.walletBalance || 0,
-              totalDonations: memberData.totalDonations || data.totalDonations || 0,
-              promotionEligible: memberData.promotionEligible || data.promotionEligible || false,
-              profilePhoto: memberData.profilePhoto || data.profilePhoto || null,
-              directReferralCount: memberData.directReferralCount || data.directReferralCount || 0,
-              createdAt: memberData.createdAt || data.createdAt || '',
-              updatedAt: memberData.updatedAt || data.updatedAt || ''
-            };
-            childrenList.push(child);
-            visited.add(doc.id);
-          }
+        if (!rmSnap.empty) {
+          await updateDoc(doc(db, 'registeredMembers', rmSnap.docs[0].id), {
+            fullName: payload.fullName,
+            email: payload.email,
+            phone: payload.phone,
+            address: payload.address,
+            gender: payload.gender,
+            dob: payload.dob,
+            updatedAt: payload.updatedAt,
+          });
         }
-        
-        // Sort children by level
-        const levelsToUse = dynamicLevels.length > 0 ? dynamicLevels : getDefaultLevels();
-        childrenList.sort((a, b) => {
-          const aIndex = levelsToUse.findIndex(l => l.id === a.level);
-          const bIndex = levelsToUse.findIndex(l => l.id === b.level);
-          return aIndex - bIndex;
-        });
-        
-        // Add children to parent and recursively fetch their children
-        for (const child of childrenList) {
-          parentObj.children.push(child);
-          parentObj.childrenCount = (parentObj.childrenCount || 0) + 1;
-          await fetchChildren(child.id, child, child.depth);
-        }
-      } catch (error) {
-        console.error('Error fetching children for:', parentId, error);
+      } catch (e) {
+        console.warn('registeredMembers sync skipped:', e);
       }
-    };
-    
-    await fetchChildren(member.id, rootMember, 0);
-    
-    // Flatten the hierarchy for display while preserving structure
-    const flattenHierarchy = (node, flatList) => {
-      flatList.push(node);
-      if (node.children && node.children.length > 0) {
-        for (const child of node.children) {
-          flattenHierarchy(child, flatList);
-        }
+
+      Alert.alert('Success', 'Working member updated successfully');
+      setEditModalVisible(false);
+      setEditingMember(null);
+
+      // Update the detail modal in place if it was showing this member
+      if (selectedMember?.id === editingMember.id) {
+        setSelectedMember({ ...selectedMember, ...payload });
       }
-    };
-    
-    const flatHierarchy = [];
-    flattenHierarchy(rootMember, flatHierarchy);
-    setMemberHierarchy(flatHierarchy);
-    
-    console.log('📊 Hierarchy loaded:', flatHierarchy.length, 'members');
-    
-  } catch (error) {
-    console.error('Error loading hierarchy:', error);
-    setMemberHierarchy([]);
-  } finally {
-    setLoadingHierarchy(false);
-  }
-};
+    } catch (e) {
+      console.error('handleSaveEdit:', e);
+      Alert.alert('Error', e.message || 'Failed to save');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
   // ============ FETCH AVAILABLE SUB-MEMBERS (ONLY EXACTLY ONE LEVEL BELOW) ============
   const fetchAvailableSubMembers = async (parentLevel) => {
   if (!parentLevel) return;
@@ -1966,11 +2122,20 @@ const fetchSubMembersForHierarchy = async (parentId) => {
     let filtered = data;
 
     if (searchText) {
-      filtered = filtered.filter(member =>
-        member.fullName?.toLowerCase().includes(searchText.toLowerCase()) ||
-        member.email?.toLowerCase().includes(searchText.toLowerCase()) ||
-        member.levelTitle?.toLowerCase().includes(searchText.toLowerCase())
-      );
+      const q = searchText.toLowerCase().trim();
+      filtered = filtered.filter(member => {
+        const haystack = [
+          member.fullName, member.name, member.email, member.phone,
+          member.address, member.village, member.postOffice, member.thana,
+          member.district, member.state, member.pinCode, member.aadharNumber,
+          member.gender, member.dob, member.role, member.status, member.level,
+          member.levelTitle, member.levelName, getLevelLabel(member.level),
+          member.position, member.department, member.employeeId,
+          member.referralCode, member.parentName, member.registrationMethod,
+          member.reportingTo,
+        ].filter(Boolean).map(v => String(v).toLowerCase()).join(' ');
+        return haystack.includes(q);
+      });
     }
 
     if (status !== 'all') {
@@ -1986,7 +2151,6 @@ const fetchSubMembersForHierarchy = async (parentId) => {
 
     setFilteredMembers(filtered);
   };
-
   const handleSearch = (text) => {
     setSearch(text);
     applyFilters(workingMembers, text, filterStatus, filterLevel);
@@ -2241,11 +2405,9 @@ const fetchSubMembersForHierarchy = async (parentId) => {
     return (
       <TouchableOpacity 
   style={styles.memberCard}
-  onPress={() => {
-    console.log('👆 Member clicked:', member.fullName, 'Direct referrals:', member.directReferrals);
+    onPress={() => {
     setSelectedMember(member);
-    loadMemberHierarchy(member);
-    fetchDirectMembersData(member.directReferrals || []);
+    loadMemberTree(member);
     setDetailModalVisible(true);
   }}
   activeOpacity={0.7}
@@ -2436,11 +2598,18 @@ const fetchSubMembersForHierarchy = async (parentId) => {
               <Text style={[styles.actionButtonText, { fontSize: isSmallDevice ? 7 : 9 }]}>{translations.suspend}</Text>
             </TouchableOpacity>
           )}
+                    <TouchableOpacity 
+            style={[styles.actionButton, styles.editButton]}
+            onPress={() => openEditMember(member)}
+          >
+            <MaterialIcons name="edit" size={isSmallDevice ? 10 : 14} color="#ffffff" />
+            <Text style={[styles.actionButtonText, { fontSize: isSmallDevice ? 7 : 9 }]}>Edit</Text>
+          </TouchableOpacity>
           <TouchableOpacity 
             style={[styles.actionButton, styles.viewButton]}
             onPress={() => {
               setSelectedMember(member);
-              loadMemberHierarchy(member);
+              loadMemberTree(member);
               setDetailModalVisible(true);
             }}
           >
@@ -3024,7 +3193,722 @@ const NodeMembersModal = () => {
 
     );
   };
+  // ============ Recursive tree renderer ============
+  const renderTreeNode = (node, depth = 0, isRoot = false) => {
+    const hasChildren = node.children && node.children.length > 0;
+    const levelColor = getLevelColor(node.level);
+    const indent = Math.min(depth * 14, 60);
 
+    return (
+      <View key={node.id} style={{ marginBottom: 6 }}>
+        <TouchableOpacity
+          style={[
+            styles.treeNodeCard,
+            isRoot && styles.treeNodeRoot,
+            depth === 1 && !isRoot && styles.treeNodeDirect,
+            { marginLeft: indent },
+          ]}
+          onPress={() => openNodeDetail(node)}
+          activeOpacity={0.7}
+        >
+          <View style={[styles.treeNodeLevelBadge, { backgroundColor: levelColor + '20' }]}>
+            <Text style={[styles.treeNodeLevelText, { color: levelColor }]}>
+              {node.levelName || getLevelLabel(node.level) || 'I'}
+            </Text>
+          </View>
+          <View style={[styles.treeNodeAvatar, { backgroundColor: isRoot ? '#FF7722' : '#fef3c7' }]}>
+            <Text style={[styles.treeNodeAvatarText, { color: isRoot ? '#ffffff' : '#FF7722' }]}>
+              {node.fullName?.charAt(0)?.toUpperCase() || '?'}
+            </Text>
+          </View>
+          <View style={{ flex: 1, marginLeft: 8 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+              <Text style={[styles.treeNodeName, isRoot && styles.treeNodeNameRoot]} numberOfLines={1}>
+                {node.fullName || 'Unknown'}
+              </Text>
+              {isRoot && (
+                <View style={styles.treeNodeRootBadge}>
+                  <Text style={styles.treeNodeRootBadgeText}>You</Text>
+                </View>
+              )}
+              {depth === 1 && !isRoot && (
+                <View style={styles.treeNodeDirectBadge}>
+                  <Text style={styles.treeNodeDirectBadgeText}>Direct</Text>
+                </View>
+              )}
+              {(node.registeredCount || 0) > 0 && (
+                <View style={styles.treeNodeRegBadge}>
+                  <MaterialIcons name="person-add" size={9} color="#f59e0b" />
+                  <Text style={styles.treeNodeRegBadgeText}>{node.registeredCount}</Text>
+                </View>
+              )}
+              {hasChildren && (
+                <View style={styles.treeNodeChildBadge}>
+                  <MaterialIcons name="people" size={9} color="#8b5cf6" />
+                  <Text style={styles.treeNodeChildBadgeText}>{node.children.length}</Text>
+                </View>
+              )}
+            </View>
+            <Text style={styles.treeNodeMeta} numberOfLines={1}>
+              {node.phone || node.email || '—'}
+            </Text>
+          </View>
+          <View style={[styles.treeNodeStatus, { backgroundColor: node.status === 'active' ? '#d1fae5' : '#fee2e2' }]}>
+            <Text style={{ fontFamily: Fonts.SemiBold, fontSize: 8, color: node.status === 'active' ? '#10b981' : '#ef4444' }}>
+              {node.status || 'inactive'}
+            </Text>
+          </View>
+        </TouchableOpacity>
+
+        {hasChildren && (
+          <View>{node.children.map(child => renderTreeNode(child, depth + 1, false))}</View>
+        )}
+      </View>
+    );
+  };
+
+  // ============ Small info row ============
+  const InfoRow = ({ icon, label, value }) => (
+    <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 6, gap: 8 }}>
+      <MaterialIcons name={icon} size={15} color="#6b7280" />
+      <Text style={{ fontFamily: Fonts.Regular, fontSize: 11, color: '#6b7280', width: 70 }}>{label}</Text>
+      <Text style={{ fontFamily: Fonts.SemiBold, fontSize: 12, color: '#1f2937', flex: 1 }} numberOfLines={2}>
+        {value}
+      </Text>
+    </View>
+  );
+
+  // ============ Per-node detail modal ============
+  const NodeDetailModal = () => {
+    const filteredReg = nodeDetailRegistered.filter(m => {
+      if (!nodeDetailSearch) return true;
+      const q = nodeDetailSearch.toLowerCase();
+      return (
+        m.fullName?.toLowerCase().includes(q) ||
+        m.email?.toLowerCase().includes(q) ||
+        m.phone?.includes(nodeDetailSearch)
+      );
+    });
+    const levelColor = nodeDetailData ? getLevelColor(nodeDetailData.level) : '#8b5cf6';
+
+    return (
+      <Modal animationType="slide" transparent visible={nodeDetailVisible} onRequestClose={() => setNodeDetailVisible(false)}>
+        <View style={styles.modalContainer}>
+          <View style={styles.nodeDetailModalContent}>
+            <View style={styles.nodeDetailHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                <View style={[styles.nodeDetailAvatar, { backgroundColor: levelColor + '20' }]}>
+                  <Text style={[styles.nodeDetailAvatarText, { color: levelColor }]}>
+                    {nodeDetailData?.fullName?.charAt(0)?.toUpperCase() || '?'}
+                  </Text>
+                </View>
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={styles.nodeDetailName} numberOfLines={1}>
+                    {nodeDetailData?.fullName || 'Unknown'}
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 6, marginTop: 3, flexWrap: 'wrap' }}>
+                    <View style={[styles.nodeDetailLevelBadge, { backgroundColor: levelColor + '20' }]}>
+                      <MaterialIcons name="star" size={11} color={levelColor} />
+                      <Text style={[styles.nodeDetailLevelText, { color: levelColor }]}>
+                        {getLevelLabel(nodeDetailData?.level)}
+                      </Text>
+                    </View>
+                    <View style={[styles.nodeDetailStatusBadge, { backgroundColor: nodeDetailData?.status === 'active' ? '#d1fae5' : '#fee2e2' }]}>
+                      <Text style={{ fontFamily: Fonts.SemiBold, fontSize: 9, color: nodeDetailData?.status === 'active' ? '#10b981' : '#ef4444' }}>
+                        {nodeDetailData?.status || 'inactive'}
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
+              <TouchableOpacity onPress={() => setNodeDetailVisible(false)}>
+                <MaterialIcons name="close" size={22} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
+
+            {nodeDetailLoading ? (
+              <View style={{ padding: 30, alignItems: 'center' }}>
+                <ActivityIndicator size="large" color="#FF7722" />
+                <Text style={styles.nodeMembersLoadingText}>Loading details...</Text>
+              </View>
+            ) : (
+              <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+                <Text style={styles.nodeDetailSectionTitle}>Commission Earned</Text>
+                <View style={styles.nodeDetailCommissionRow}>
+                  <View style={styles.nodeDetailCommissionCard}>
+                    <Text style={styles.nodeDetailCommissionLabel}>Total</Text>
+                    <Text style={[styles.nodeDetailCommissionValue, { color: '#10b981' }]}>
+                      ₹{nodeDetailCommission.total.toLocaleString()}
+                    </Text>
+                  </View>
+                  <View style={styles.nodeDetailCommissionCard}>
+                    <Text style={styles.nodeDetailCommissionLabel}>Pending</Text>
+                    <Text style={[styles.nodeDetailCommissionValue, { color: '#f59e0b' }]}>
+                      ₹{nodeDetailCommission.pending.toLocaleString()}
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.nodeDetailCommissionRow}>
+                  <View style={styles.nodeDetailCommissionCard}>
+                    <Text style={styles.nodeDetailCommissionLabel}>Donation Comm.</Text>
+                    <Text style={[styles.nodeDetailCommissionValue, { color: '#8b5cf6' }]}>
+                      ₹{nodeDetailCommission.donation.toLocaleString()}
+                    </Text>
+                  </View>
+                  <View style={styles.nodeDetailCommissionCard}>
+                    <Text style={styles.nodeDetailCommissionLabel}>Donations Made</Text>
+                    <Text style={[styles.nodeDetailCommissionValue, { color: '#ef4444' }]}>
+                      ₹{nodeDetailDonations.toLocaleString()}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.nodeDetailSectionTitle}>Personal Details</Text>
+                <View style={styles.nodeDetailInfoCard}>
+                  <InfoRow icon="phone" label="Phone" value={nodeDetailData?.phone || '—'} />
+                  <InfoRow icon="email" label="Email" value={nodeDetailData?.email || '—'} />
+                  <InfoRow icon="location-on" label="Address" value={nodeDetailData?.address || '—'} />
+                  <InfoRow
+                    icon="calendar-today"
+                    label="Joined"
+                    value={
+                      nodeDetailData?.createdAt
+                        ? new Date(nodeDetailData.createdAt?.seconds * 1000 || nodeDetailData.createdAt).toLocaleDateString()
+                        : '—'
+                    }
+                  />
+                  <InfoRow icon="tag" label="Referral" value={nodeDetailData?.referralCode || '—'} />
+                </View>
+
+                {nodeDetailUpline.length > 0 && (
+                  <>
+                    <Text style={styles.nodeDetailSectionTitle}>Upline ({nodeDetailUpline.length})</Text>
+                    {nodeDetailUpline.map((u, i) => (
+                      <View key={u.id} style={styles.nodeDetailUplineRow}>
+                        <Text style={styles.nodeDetailUplineIndex}>{i + 1}</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.nodeDetailUplineName}>{u.fullName || 'Unknown'}</Text>
+                          <Text style={styles.nodeDetailUplineMeta}>
+                            {getLevelLabel(u.level)} · {u.phone || u.email || '—'}
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
+                  </>
+                )}
+
+                <Text style={styles.nodeDetailSectionTitle}>
+                  Registered Members ({nodeDetailRegistered.length})
+                </Text>
+
+                {nodeDetailRegistered.length > 0 && (
+                  <View style={styles.nodeDetailSearchBox}>
+                    <MaterialIcons name="search" size={14} color="#9ca3af" />
+                    <TextInput
+                      style={styles.nodeDetailSearchInput}
+                      placeholder="Search members..."
+                      placeholderTextColor="#9ca3af"
+                      value={nodeDetailSearch}
+                      onChangeText={setNodeDetailSearch}
+                    />
+                  </View>
+                )}
+
+                {filteredReg.length === 0 ? (
+                  <View style={{ alignItems: 'center', paddingVertical: 20 }}>
+                    <MaterialIcons name="people-outline" size={36} color="#d1d5db" />
+                    <Text style={styles.detailEmptyText}>
+                      {nodeDetailSearch ? 'No matches' : 'No registered members'}
+                    </Text>
+                  </View>
+                ) : (
+                  filteredReg.map(m => (
+                    <View key={m.id} style={styles.nodeDetailRegRow}>
+                      <View style={styles.nodeDetailRegAvatar}>
+                        <Text style={styles.nodeDetailRegAvatarText}>
+                          {m.fullName?.charAt(0)?.toUpperCase() || '?'}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.nodeDetailRegName} numberOfLines={1}>{m.fullName || 'Unknown'}</Text>
+                        <Text style={styles.nodeDetailRegMeta} numberOfLines={1}>{m.phone || m.email || '—'}</Text>
+                      </View>
+                      <View style={[styles.nodeDetailRegBadge, { backgroundColor: m.status === 'active' ? '#d1fae5' : '#fee2e2' }]}>
+                        <Text style={{ fontFamily: Fonts.SemiBold, fontSize: 8, color: m.status === 'active' ? '#10b981' : '#ef4444' }}>
+                          {m.status || 'inactive'}
+                        </Text>
+                      </View>
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            )}
+
+            <TouchableOpacity style={styles.nodeDetailCloseBtn} onPress={() => setNodeDetailVisible(false)}>
+              <Text style={styles.nodeDetailCloseBtnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+  // ================================================================
+  // EDIT WORKING MEMBER MODAL
+  // ================================================================
+  const EditMemberModal = () => (
+    <Modal
+      animationType="slide"
+      transparent
+      visible={editModalVisible}
+      onRequestClose={() => !savingEdit && setEditModalVisible(false)}
+    >
+      <View style={styles.modalContainer}>
+        <View style={styles.modalContent}>
+          <View style={styles.modalHeader}>
+            <Text style={[styles.modalTitle, { fontSize: isSmallDevice ? 16 : 18 }]}>
+              Edit Working Member
+            </Text>
+            <TouchableOpacity
+              onPress={() => !savingEdit && setEditModalVisible(false)}
+              disabled={savingEdit}
+            >
+              <MaterialIcons name="close" size={24} color="#6B7280" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: '85%' }}>
+            {/* ------- Personal ------- */}
+            <View style={styles.formSection}>
+              <Text style={[styles.formSectionTitle, { fontSize: isSmallDevice ? 13 : 14 }]}>
+                Personal Information
+              </Text>
+
+              <View style={styles.formField}>
+                <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Full Name *</Text>
+                <TextInput
+                  style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                  value={editForm.fullName}
+                  onChangeText={t => setEditForm({ ...editForm, fullName: t })}
+                  placeholder="Full name"
+                  placeholderTextColor="#9ca3af"
+                  editable={!savingEdit}
+                />
+              </View>
+
+              <View style={styles.formField}>
+                <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Email *</Text>
+                <TextInput
+                  style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                  value={editForm.email}
+                  onChangeText={t => setEditForm({ ...editForm, email: t })}
+                  placeholder="Email"
+                  placeholderTextColor="#9ca3af"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  editable={!savingEdit}
+                />
+              </View>
+
+              <View style={styles.formField}>
+                <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Phone</Text>
+                <TextInput
+                  style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                  value={editForm.phone}
+                  onChangeText={t => setEditForm({ ...editForm, phone: t })}
+                  placeholder="Phone"
+                  placeholderTextColor="#9ca3af"
+                  keyboardType="phone-pad"
+                  editable={!savingEdit}
+                />
+              </View>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formField, { flex: 1, marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Gender</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.gender}
+                    onChangeText={t => setEditForm({ ...editForm, gender: t })}
+                    placeholder="Male/Female/Other"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.formField, { flex: 1 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>DOB</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.dob}
+                    onChangeText={t => setEditForm({ ...editForm, dob: t })}
+                    placeholder="DD/MM/YYYY"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formField, { flex: 1, marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Father's Name</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.fatherName}
+                    onChangeText={t => setEditForm({ ...editForm, fatherName: t })}
+                    placeholder="Father's name"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.formField, { flex: 1 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Mother's Name</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.motherName}
+                    onChangeText={t => setEditForm({ ...editForm, motherName: t })}
+                    placeholder="Mother's name"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formField, { flex: 1, marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Aadhar</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.aadharNumber}
+                    onChangeText={t => setEditForm({ ...editForm, aadharNumber: t })}
+                    placeholder="Aadhar number"
+                    placeholderTextColor="#9ca3af"
+                    keyboardType="numeric"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.formField, { flex: 1 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>PAN</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.panNumber}
+                    onChangeText={t => setEditForm({ ...editForm, panNumber: t })}
+                    placeholder="PAN number"
+                    placeholderTextColor="#9ca3af"
+                    autoCapitalize="characters"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+            </View>
+
+            {/* ------- Address ------- */}
+            <View style={styles.formSection}>
+              <Text style={[styles.formSectionTitle, { fontSize: isSmallDevice ? 13 : 14 }]}>
+                Address Information
+              </Text>
+
+              <View style={styles.formField}>
+                <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Address</Text>
+                <TextInput
+                  style={[styles.formInput, styles.formTextArea, { fontSize: isSmallDevice ? 13 : 14 }]}
+                  value={editForm.address}
+                  onChangeText={t => setEditForm({ ...editForm, address: t })}
+                  placeholder="Address"
+                  placeholderTextColor="#9ca3af"
+                  multiline
+                  numberOfLines={2}
+                  editable={!savingEdit}
+                />
+              </View>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formField, { flex: 1, marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Village</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.village}
+                    onChangeText={t => setEditForm({ ...editForm, village: t })}
+                    placeholder="Village"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.formField, { flex: 1 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Post Office</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.postOffice}
+                    onChangeText={t => setEditForm({ ...editForm, postOffice: t })}
+                    placeholder="Post Office"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formField, { flex: 1, marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Thana</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.thana}
+                    onChangeText={t => setEditForm({ ...editForm, thana: t })}
+                    placeholder="Thana"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.formField, { flex: 1 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>District</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.district}
+                    onChangeText={t => setEditForm({ ...editForm, district: t })}
+                    placeholder="District"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formField, { flex: 1, marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>State</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.state}
+                    onChangeText={t => setEditForm({ ...editForm, state: t })}
+                    placeholder="State"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.formField, { flex: 1 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>PIN Code</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.pinCode}
+                    onChangeText={t => setEditForm({ ...editForm, pinCode: t })}
+                    placeholder="PIN"
+                    placeholderTextColor="#9ca3af"
+                    keyboardType="numeric"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+            </View>
+
+            {/* ------- Work ------- */}
+            <View style={styles.formSection}>
+              <Text style={[styles.formSectionTitle, { fontSize: isSmallDevice ? 13 : 14 }]}>
+                Employment & Account
+              </Text>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formField, { flex: 1, marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Position</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.position}
+                    onChangeText={t => setEditForm({ ...editForm, position: t })}
+                    placeholder="Position"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.formField, { flex: 1 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Department</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.department}
+                    onChangeText={t => setEditForm({ ...editForm, department: t })}
+                    placeholder="Department"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.formRow}>
+                <View style={[styles.formField, { flex: 1, marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Employee ID</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.employeeId}
+                    onChangeText={t => setEditForm({ ...editForm, employeeId: t })}
+                    placeholder="Employee ID"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.formField, { flex: 1 }]}>
+                  <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Reporting To</Text>
+                  <TextInput
+                    style={[styles.formInput, { fontSize: isSmallDevice ? 13 : 14 }]}
+                    value={editForm.reportingTo}
+                    onChangeText={t => setEditForm({ ...editForm, reportingTo: t })}
+                    placeholder="Reporting to"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              {/* Role */}
+              <View style={styles.formField}>
+                <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Role</Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {[
+                    { key: 'working', label: 'Working' },
+                    { key: 'member', label: 'Member' },
+                    { key: 'admin', label: 'Admin' },
+                  ].map(r => {
+                    const active = editForm.role === r.key;
+                    return (
+                      <TouchableOpacity
+                        key={r.key}
+                        onPress={() => setEditForm({ ...editForm, role: r.key })}
+                        disabled={savingEdit}
+                        style={{
+                          flex: 1,
+                          paddingVertical: 8,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: active ? '#FF7722' : '#e5e7eb',
+                          backgroundColor: active ? '#FF7722' : '#ffffff',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{
+                          fontFamily: Fonts.SemiBold,
+                          fontSize: 12,
+                          color: active ? '#ffffff' : '#6b7280',
+                        }}>
+                          {r.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* Status */}
+              <View style={styles.formField}>
+                <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Status</Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {[
+                    { key: 'active', label: 'Active' },
+                    { key: 'pending', label: 'Pending' },
+                    { key: 'suspended', label: 'Suspended' },
+                  ].map(s => {
+                    const active = editForm.status === s.key;
+                    return (
+                      <TouchableOpacity
+                        key={s.key}
+                        onPress={() => setEditForm({ ...editForm, status: s.key })}
+                        disabled={savingEdit}
+                        style={{
+                          flex: 1,
+                          paddingVertical: 8,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: active ? '#10b981' : '#e5e7eb',
+                          backgroundColor: active ? '#10b981' : '#ffffff',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{
+                          fontFamily: Fonts.SemiBold,
+                          fontSize: 12,
+                          color: active ? '#ffffff' : '#6b7280',
+                        }}>
+                          {s.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* Level */}
+              <View style={styles.formField}>
+                <Text style={[styles.formLabel, { fontSize: isSmallDevice ? 11 : 12 }]}>Level</Text>
+                <View style={styles.levelOptionsGrid}>
+                  {(dynamicLevels.length > 0 ? dynamicLevels : getDefaultLevels()).map(level => {
+                    const active = editForm.level === level.id;
+                    const color = getLevelColor(level.id);
+                    return (
+                      <TouchableOpacity
+                        key={level.id}
+                        onPress={() => setEditForm({ ...editForm, level: level.id })}
+                        disabled={savingEdit}
+                        style={[
+                          styles.levelOption,
+                          active && styles.levelOptionActive,
+                          { borderColor: active ? color : '#e5e7eb' },
+                        ]}
+                      >
+                        <MaterialIcons
+                          name={getLevelIcon(level.id)}
+                          size={isSmallDevice ? 10 : 13}
+                          color={active ? '#ffffff' : color}
+                        />
+                        <Text style={[
+                          styles.levelOptionText,
+                          active && styles.levelOptionTextActive,
+                          { fontSize: isSmallDevice ? 9 : 10 },
+                        ]}>
+                          {level.id}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            </View>
+          </ScrollView>
+
+          {/* Save / Cancel */}
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+            <TouchableOpacity
+              onPress={() => !savingEdit && setEditModalVisible(false)}
+              disabled={savingEdit}
+              style={{
+                flex: 1,
+                paddingVertical: 12,
+                borderRadius: 8,
+                backgroundColor: '#f3f4f6',
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ fontFamily: Fonts.SemiBold, fontSize: 14, color: '#6b7280' }}>
+                Cancel
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={handleSaveEdit}
+              disabled={savingEdit}
+              style={{
+                flex: 1,
+                paddingVertical: 12,
+                borderRadius: 8,
+                backgroundColor: '#FF7722',
+                alignItems: 'center',
+                opacity: savingEdit ? 0.6 : 1,
+              }}
+            >
+              {savingEdit ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <Text style={{ fontFamily: Fonts.SemiBold, fontSize: 14, color: '#ffffff' }}>
+                  Save Changes
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
   if (loading) {
     return (
       <View style={styles.loadingContainer} key={renderKey}>
@@ -4199,198 +5083,69 @@ const NodeMembersModal = () => {
                   </View>
 
 
-<View style={styles.detailSection}>
-  <View style={styles.hierarchyHeader}>
-    <Text style={[styles.detailSectionTitle, { fontSize: isSmallDevice ? 13 : 14 }]}>
-      Downline Hierarchy
-    </Text>
-    {memberHierarchy.length > 0 && (
-      <Text style={styles.hierarchyCount}>
-        ({memberHierarchy.length} members)
-      </Text>
-    )}
-  </View>
-  
-  {loadingHierarchy ? (
-    <View style={styles.hierarchyLoading}>
-      <ActivityIndicator size="small" color="#FF7722" />
-      <Text style={styles.hierarchyLoadingText}>Loading hierarchy...</Text>
-    </View>
-  ) : memberHierarchy.length > 0 ? (
-    <View style={styles.hierarchyContainer}>
-      {/* Visual Tree Render */}
-      {memberHierarchy.map((member, index) => {
-        const isDirectChild = member.parentId === selectedMember?.id;
-        const isGrandChild = member.depth > 1;
-        const hasChildren = member.childrenCount > 0;
-        const levelColor = getLevelColor(member.level);
-        
-        return (
-          <View key={member.id} style={styles.hierarchyItem}>
-            {/* Node Card - Same style as dashboard */}
-            <TouchableOpacity 
-  style={[
-    styles.hierarchyItemContent,
-    member.isCurrent && styles.hierarchyCurrentItem,
-    isDirectChild && styles.hierarchyDirectChildItem,
-    isGrandChild && styles.hierarchyGrandChildItem
-  ]}
-  onPress={() => {
-    // ✅ SIMPLE FIX: Find the actual member from workingMembers
-    const actualMember = workingMembers.find(m => m.id === member.id);
-    if (actualMember) {
-      // Use the actual member data directly
-      const directMembers = actualMember.registeredMembersList || [];
-      const filteredMembers = directMembers.filter(m => 
-        m.role !== 'working' && m.role !== 'workingMember'
-      );
-      setSelectedNodeMembers({
-        memberDetails: actualMember,  // ← USE THE ACTUAL MEMBER FROM workingMembers
-        directMembers: filteredMembers
-      });
-      setSelectedNodeName(actualMember.fullName);
-      setNodeMembersModalVisible(true);
-    } else {
-      // Fallback: try to find by ID
-      const fallbackMember = workingMembers.find(m => m.id === member.id);
-      if (fallbackMember) {
-        const directMembers = fallbackMember.registeredMembersList || [];
-        const filteredMembers = directMembers.filter(m => 
-          m.role !== 'working' && m.role !== 'workingMember'
-        );
-        setSelectedNodeMembers({
-          memberDetails: fallbackMember,
-          directMembers: filteredMembers
-        });
-        setSelectedNodeName(fallbackMember.fullName);
-        setNodeMembersModalVisible(true);
-      } else {
-        // Final fallback
-        setSelectedNodeMembers({
-          memberDetails: member,
-          directMembers: []
-        });
-        setSelectedNodeName(member.fullName);
-        setNodeMembersModalVisible(true);
-      }
-    }
-  }}
-  activeOpacity={0.7}
->
-              {/* Level Badge */}
-              <View style={[
-                styles.hierarchyNodeLevelBadge,
-                { backgroundColor: levelColor + '20' }
-              ]}>
-                <Text style={[styles.hierarchyNodeLevelText, { color: levelColor }]}>
-                  {member.levelName || member.level || 'I'}
-                </Text>
-              </View>
-
-              {/* Avatar */}
-              <View style={[
-                styles.hierarchyNodeAvatar,
-                { backgroundColor: member.isCurrent ? '#FF7722' : '#f3f4f6' }
-              ]}>
-                <Text style={[
-                  styles.hierarchyNodeAvatarText,
-                  { color: member.isCurrent ? '#ffffff' : '#6b7280' }
-                ]}>
-                  {member.fullName?.charAt(0)?.toUpperCase() || '?'}
-                </Text>
-              </View>
-
-              {/* Member Info */}
-              <View style={styles.hierarchyNodeInfo}>
-                <View style={styles.hierarchyNodeNameRow}>
-                  <Text style={[
-                    styles.hierarchyNodeName,
-                    member.isCurrent && styles.hierarchyNodeNameCurrent
-                  ]} numberOfLines={1}>
-                    {member.fullName}
-                    {member.isCurrent && ' 👈'}
-                  </Text>
-                  {isDirectChild && (
-                    <View style={styles.hierarchyNodeDirectBadge}>
-                      <Text style={styles.hierarchyNodeDirectBadgeText}>Direct</Text>
-                    </View>
-                  )}
-                  {isGrandChild && (
-                    <View style={styles.hierarchyNodeIndirectBadge}>
-                      <Text style={styles.hierarchyNodeIndirectBadgeText}>Indirect</Text>
-                    </View>
-                  )}
-                </View>
-                <View style={styles.hierarchyNodeMeta}>
-                  <Text style={styles.hierarchyNodeLevel}>
-                    Level {member.level || 'I'}
-                  </Text>
-                  {hasChildren && !member.isCurrent && (
-                    <View style={styles.hierarchyNodeChildCount}>
-                      <MaterialIcons name="people" size={10} color="#8b5cf6" />
-                      <Text style={styles.hierarchyNodeChildCountText}>{member.childrenCount}</Text>
-                    </View>
-                  )}
-                </View>
-              </View>
-
-              {/* Status */}
-              <View style={[
-                styles.hierarchyNodeStatus,
-                { backgroundColor: member.status === 'active' ? '#d1fae5' : '#fee2e2' }
-              ]}>
-                <View style={[
-                  styles.hierarchyNodeStatusDot,
-                  { backgroundColor: member.status === 'active' ? '#10b981' : '#ef4444' }
-                ]} />
-                <Text style={[
-                  styles.hierarchyNodeStatusText,
-                  { color: member.status === 'active' ? '#10b981' : '#ef4444' }
-                ]}>
-                  {member.status || 'inactive'}
-                </Text>
-              </View>
-            </TouchableOpacity>
-
-            {/* Connector - show between nodes */}
-            {index < memberHierarchy.length - 1 && (
-              <View style={styles.hierarchyConnector}>
-                <View style={styles.hierarchyConnectorLine} />
-                {memberHierarchy[index + 1]?.depth > member.depth ? (
-                  <MaterialIcons name="arrow-downward" size={14} color="#8b5cf6" />
-                ) : (
-                  <View style={styles.hierarchyConnectorDot} />
-                )}
-                <View style={styles.hierarchyConnectorLine} />
-              </View>
-            )}
-          </View>
-        );
-      })}
-      
-      {/* Summary */}
-      <View style={styles.hierarchySummary}>
-        <Text style={styles.hierarchySummaryText}>
-          Total: {memberHierarchy.length} members
-          {memberHierarchy.filter(m => !m.isCurrent && m.depth === 1).length > 0 && 
-            ` | Direct: ${memberHierarchy.filter(m => !m.isCurrent && m.depth === 1).length}`
-          }
-          {memberHierarchy.filter(m => m.depth > 1).length > 0 && 
-            ` | Indirect: ${memberHierarchy.filter(m => m.depth > 1).length}`
-          }
+{/* ============ UPLINE ============ */}
+{treeData.upline.length > 0 && (
+  <View style={styles.detailSection}>
+    <View style={styles.hierarchyHeader}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <MaterialIcons name="arrow-upward" size={16} color="#f59e0b" />
+        <Text style={[styles.detailSectionTitle, { fontSize: isSmallDevice ? 13 : 14, marginBottom: 0 }]}>
+          Upline ({treeData.upline.length})
         </Text>
       </View>
     </View>
-  ) : (
-    <View style={styles.hierarchyEmptyState}>
-      <MaterialIcons name="people-outline" size={30} color="#d1d5db" />
-      <Text style={[styles.detailEmptyText, { fontSize: isSmallDevice ? 12 : 13 }]}>
-        No downline members yet
-      </Text>
-      <Text style={[styles.hierarchyEmptySubtext, { fontSize: isSmallDevice ? 10 : 11 }]}>
-        Use the "Assign" button to add members under this person
+    {treeData.upline.map((u, i) => (
+      <TouchableOpacity
+        key={u.id}
+        style={styles.uplineRow}
+        onPress={() => openNodeDetail(u)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.uplineIndexBadge}>
+          <Text style={styles.uplineIndexText}>{i + 1}</Text>
+        </View>
+        <View style={styles.uplineAvatar}>
+          <Text style={styles.uplineAvatarText}>
+            {u.fullName?.charAt(0)?.toUpperCase() || '?'}
+          </Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.uplineName} numberOfLines={1}>{u.fullName || 'Unknown'}</Text>
+          <Text style={styles.uplineMeta} numberOfLines={1}>
+            {getLevelLabel(u.level)} · {u.phone || u.email || '—'}
+          </Text>
+        </View>
+        <MaterialIcons name="chevron-right" size={18} color="#d1d5db" />
+      </TouchableOpacity>
+    ))}
+  </View>
+)}
+
+{/* ============ DOWNLINE TREE ============ */}
+<View style={styles.detailSection}>
+  <View style={styles.hierarchyHeader}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+      <MaterialIcons name="arrow-downward" size={16} color="#FF7722" />
+      <Text style={[styles.detailSectionTitle, { fontSize: isSmallDevice ? 13 : 14, marginBottom: 0 }]}>
+        Downline Tree
       </Text>
     </View>
+    {treeData.downline.length > 0 && (
+      <Text style={styles.hierarchyCount}>({treeData.downline.length} direct)</Text>
+    )}
+  </View>
+
+  {treeLoading ? (
+    <View style={styles.hierarchyLoading}>
+      <ActivityIndicator size="small" color="#FF7722" />
+      <Text style={styles.hierarchyLoadingText}>Loading tree...</Text>
+    </View>
+  ) : !treeData.self ? (
+    <View style={styles.hierarchyEmptyState}>
+      <Text style={styles.detailEmptyText}>No data</Text>
+    </View>
+  ) : (
+    <View>{renderTreeNode(treeData.self, 0, true)}</View>
   )}
 </View>
                   {/* Close Button */}
@@ -4740,6 +5495,8 @@ const NodeMembersModal = () => {
           </View>
         </Modal>
 <NodeMembersModal />
+        <NodeDetailModal />
+        <EditMemberModal />
       </View>
     </SafeAreaView>
   );
@@ -5050,6 +5807,9 @@ const styles = StyleSheet.create({
   },
   viewButton: {
     backgroundColor: '#FF7722',
+  },
+  editButton: {
+    backgroundColor: '#3b82f6',
   },
   actionButtonText: {
     fontFamily: Fonts.SemiBold,
@@ -7101,4 +7861,148 @@ hierarchyContainer: {
   marginTop: 4,
   width: '100%',
 },
+  hierarchyEmptySubtext: {
+    fontFamily: Fonts.Regular,
+    fontSize: 11,
+    color: '#9ca3af',
+  },
+
+  // ============ UPLINE ============
+  uplineRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#fffbeb', borderRadius: 10, padding: 10,
+    marginBottom: 6, borderWidth: 1, borderColor: '#fde68a',
+  },
+  uplineIndexBadge: {
+    width: 20, height: 20, borderRadius: 10, backgroundColor: '#f59e0b',
+    justifyContent: 'center', alignItems: 'center', marginRight: 8,
+  },
+  uplineIndexText: { fontFamily: Fonts.Bold, fontSize: 10, color: '#ffffff' },
+  uplineAvatar: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: '#fef3c7',
+    justifyContent: 'center', alignItems: 'center', marginRight: 8,
+  },
+  uplineAvatarText: { fontFamily: Fonts.Bold, fontSize: 13, color: '#f59e0b' },
+  uplineName: { fontFamily: Fonts.SemiBold, fontSize: 13, color: '#1f2937' },
+  uplineMeta: { fontFamily: Fonts.Regular, fontSize: 10, color: '#92400e' },
+
+  // ============ TREE NODE ============
+  treeNodeCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#ffffff', borderRadius: 10, padding: 10,
+    borderWidth: 1, borderColor: '#e5e7eb',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05, shadowRadius: 2, elevation: 1,
+    minHeight: 56,
+  },
+  treeNodeRoot: { backgroundColor: '#fff7ed', borderColor: '#fed7aa', borderWidth: 2 },
+  treeNodeDirect: { backgroundColor: '#f0fdf4' },
+  treeNodeLevelBadge: {
+    paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8,
+    minWidth: 40, alignItems: 'center',
+  },
+  treeNodeLevelText: { fontFamily: Fonts.SemiBold, fontSize: 8 },
+  treeNodeAvatar: {
+    width: 32, height: 32, borderRadius: 16,
+    justifyContent: 'center', alignItems: 'center', marginLeft: 6,
+  },
+  treeNodeAvatarText: { fontFamily: Fonts.Bold, fontSize: 13 },
+  treeNodeName: { fontFamily: Fonts.SemiBold, fontSize: 12, color: '#1f2937' },
+  treeNodeNameRoot: { color: '#FF7722', fontSize: 13 },
+  treeNodeMeta: { fontFamily: Fonts.Regular, fontSize: 10, color: '#6b7280', marginTop: 2 },
+  treeNodeRootBadge: {
+    backgroundColor: '#FF7722', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6,
+  },
+  treeNodeRootBadgeText: { fontFamily: Fonts.SemiBold, fontSize: 7, color: '#ffffff' },
+  treeNodeDirectBadge: {
+    backgroundColor: '#10b981', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6,
+  },
+  treeNodeDirectBadgeText: { fontFamily: Fonts.SemiBold, fontSize: 7, color: '#ffffff' },
+  treeNodeRegBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: '#fef3c7', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 6,
+  },
+  treeNodeRegBadgeText: { fontFamily: Fonts.SemiBold, fontSize: 8, color: '#f59e0b' },
+  treeNodeChildBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: '#ede9fe', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 6,
+  },
+  treeNodeChildBadgeText: { fontFamily: Fonts.SemiBold, fontSize: 8, color: '#8b5cf6' },
+  treeNodeStatus: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8 },
+
+  // ============ NODE DETAIL MODAL ============
+  nodeDetailModalContent: {
+    backgroundColor: '#ffffff', borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 20, paddingTop: 16, paddingBottom: 16,
+    maxHeight: '90%', flex: 1,
+  },
+  nodeDetailHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingBottom: 12, marginBottom: 8,
+    borderBottomWidth: 1, borderBottomColor: '#f3f4f6',
+  },
+  nodeDetailAvatar: {
+    width: 52, height: 52, borderRadius: 26,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  nodeDetailAvatarText: { fontFamily: Fonts.Bold, fontSize: 20 },
+  nodeDetailName: { fontFamily: Fonts.Bold, fontSize: 16, color: '#1f2937' },
+  nodeDetailLevelBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10,
+  },
+  nodeDetailLevelText: { fontFamily: Fonts.SemiBold, fontSize: 10 },
+  nodeDetailStatusBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
+  nodeDetailSectionTitle: {
+    fontFamily: Fonts.SemiBold, fontSize: 13, color: '#1f2937',
+    marginTop: 14, marginBottom: 8,
+  },
+  nodeDetailCommissionRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  nodeDetailCommissionCard: {
+    flex: 1, backgroundColor: '#f9fafb', borderRadius: 10,
+    padding: 10, borderWidth: 1, borderColor: '#f3f4f6',
+  },
+  nodeDetailCommissionLabel: { fontFamily: Fonts.Regular, fontSize: 10, color: '#6b7280', marginBottom: 2 },
+  nodeDetailCommissionValue: { fontFamily: Fonts.Bold, fontSize: 15 },
+  nodeDetailInfoCard: {
+    backgroundColor: '#f9fafb', borderRadius: 10, padding: 10,
+    borderWidth: 1, borderColor: '#f3f4f6',
+  },
+  nodeDetailUplineRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#fffbeb', borderRadius: 8, padding: 8,
+    marginBottom: 6, gap: 8,
+  },
+  nodeDetailUplineIndex: {
+    fontFamily: Fonts.Bold, fontSize: 11, color: '#f59e0b',
+    width: 18, textAlign: 'center',
+  },
+  nodeDetailUplineName: { fontFamily: Fonts.SemiBold, fontSize: 12, color: '#1f2937' },
+  nodeDetailUplineMeta: { fontFamily: Fonts.Regular, fontSize: 10, color: '#92400e' },
+  nodeDetailSearchBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#f9fafb', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7,
+    marginBottom: 8, borderWidth: 1, borderColor: '#e5e7eb',
+  },
+  nodeDetailSearchInput: {
+    flex: 1, fontFamily: Fonts.Regular, fontSize: 12, color: '#1f2937', paddingVertical: 0,
+  },
+  nodeDetailRegRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#f9fafb', borderRadius: 10, padding: 10,
+    marginBottom: 6, borderWidth: 1, borderColor: '#f3f4f6',
+  },
+  nodeDetailRegAvatar: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: '#8b5cf615',
+    justifyContent: 'center', alignItems: 'center', marginRight: 10,
+  },
+  nodeDetailRegAvatarText: { fontFamily: Fonts.Bold, fontSize: 13, color: '#8b5cf6' },
+  nodeDetailRegName: { fontFamily: Fonts.SemiBold, fontSize: 12, color: '#1f2937' },
+  nodeDetailRegMeta: { fontFamily: Fonts.Regular, fontSize: 10, color: '#6b7280' },
+  nodeDetailRegBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
+  nodeDetailCloseBtn: {
+    backgroundColor: '#f3f4f6', paddingVertical: 12, borderRadius: 8,
+    alignItems: 'center', marginTop: 10,
+  },
+  nodeDetailCloseBtnText: { fontFamily: Fonts.SemiBold, fontSize: 14, color: '#6b7280' }
 });

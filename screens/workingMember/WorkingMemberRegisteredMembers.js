@@ -160,16 +160,7 @@ const [showPassword, setShowPassword] = useState(false);
 const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 const [registrationMethod, setRegistrationMethod] = useState('email');
 
-const [registerData, setRegisterData] = useState({
-  fullName: '',
-  email: '',
-  phone: '',
-  password: '',
-  confirmPassword: '',
-  gender: '',
-  dob: '',
-  address: '',
-});
+
   const [userData, setUserData] = useState(null);
   const [stats, setStats] = useState({
     total: 0,
@@ -407,46 +398,27 @@ const [registerData, setRegisterData] = useState({
   const handleRegisterMember = async () => {
   const auth = getAuthInstance();
 
-  console.log('🚀 Register button clicked!');
-  console.log('📋 Current registerData:', registerData);
-  
   // Validation - Check all required fields
-  console.log('🔍 Validating register data...');
-  
-  if (!registerData.fullName.trim()) {
-    console.log('❌ Validation failed: Full name is empty');
+  if (!formData.fullName.trim()) {
     Alert.alert(translations.validationError, translations.enterFullName);
     return;
   }
-  console.log('✅ Full name validated');
-
-  if (!registerData.email.trim() || !validateEmail(registerData.email)) {
-    console.log('❌ Validation failed: Email is invalid');
+  if (!formData.email.trim() || !validateEmail(formData.email)) {
     Alert.alert(translations.validationError, translations.validEmail);
     return;
   }
-  console.log('✅ Email validated');
-
-  if (!registerData.phone.trim()) {
-    console.log('❌ Validation failed: Phone is empty');
+  if (!formData.phone.trim()) {
     Alert.alert(translations.validationError, translations.enterPhone);
     return;
   }
-  console.log('✅ Phone validated');
-
-  if (!registerData.password || registerData.password.length < 6) {
-    console.log('❌ Validation failed: Password is too short');
+  if (!formData.password || formData.password.length < 6) {
     Alert.alert(translations.validationError, translations.passwordMinLength);
     return;
   }
-  console.log('✅ Password validated');
-
-  if (registerData.password !== registerData.confirmPassword) {
-    console.log('❌ Validation failed: Passwords do not match');
+  if (formData.password !== formData.confirmPassword) {
     Alert.alert(translations.validationError, translations.passwordMismatch);
     return;
   }
-  console.log('✅ Passwords match');
 
   console.log('✅ All validations passed, starting registration...');
   setRegisterLoading(true);
@@ -482,13 +454,14 @@ const [registerData, setRegisterData] = useState({
     });
     
     // Create user account
-    console.log('📧 Creating user account for:', registerData.email);
-    console.log('🔐 Password length:', registerData.password.length);
+    // Create user account
+    console.log('📧 Creating user account for:', formData.email);
+    console.log('🔐 Password length:', formData.password.length);
     
     const userCredential = await createUserWithEmailAndPassword(
       auth, 
-      registerData.email.trim(), 
-      registerData.password
+      formData.email.trim(), 
+      formData.password
     );
     
     const userId = userCredential.user.uid;
@@ -498,12 +471,12 @@ const [registerData, setRegisterData] = useState({
     console.log('📝 Creating user document...');
     const userDocData = {
       uid: userId,
-      fullName: registerData.fullName.trim(),
-      email: registerData.email.trim().toLowerCase(),
-      phone: registerData.phone.trim(),
-      address: registerData.address.trim() || '',
-      gender: registerData.gender || 'Male',
-      dob: registerData.dob || '',
+      fullName: formData.fullName.trim(),
+      email: formData.email.trim().toLowerCase(),
+      phone: formData.phone.trim(),
+      address: formData.address.trim() || '',
+      gender: formData.gender || 'Male',
+      dob: formData.dob || '',
       role: 'member',
       isWorkingMember: false,
       createdBy: workingMemberId,
@@ -526,12 +499,12 @@ const [registerData, setRegisterData] = useState({
     const registeredMemberData = {
       memberId: userId,
       workingMemberId: workingMemberId,
-      fullName: registerData.fullName.trim(),
-      email: registerData.email.trim().toLowerCase(),
-      phone: registerData.phone.trim(),
-      address: registerData.address.trim() || '',
-      gender: registerData.gender || 'Male',
-      dob: registerData.dob || '',
+      fullName: formData.fullName.trim(),
+      email: formData.email.trim().toLowerCase(),
+      phone: formData.phone.trim(),
+      address: formData.address.trim() || '',
+      gender: formData.gender || 'Male',
+      dob: formData.dob || '',
       status: 'active',
       commission: 0,
       totalDonations: 0,
@@ -551,12 +524,12 @@ const [registerData, setRegisterData] = useState({
     console.log('📝 Adding to members...');
     await addDoc(collection(db, 'members'), {
       uid: userId,
-      fullName: registerData.fullName.trim(),
-      email: registerData.email.trim().toLowerCase(),
-      phone: registerData.phone.trim(),
-      address: registerData.address.trim() || '',
-      gender: registerData.gender || 'Male',
-      dob: registerData.dob || '',
+      fullName: formData.fullName.trim(),
+      email: formData.email.trim().toLowerCase(),
+      phone: formData.phone.trim(),
+      address: formData.address.trim() || '',
+      gender: formData.gender || 'Male',
+      dob: formData.dob || '',
       role: 'member',
       registeredBy: workingMemberId,
       createdAt: new Date().toISOString(),
@@ -598,7 +571,7 @@ const [registerData, setRegisterData] = useState({
     await addDoc(collection(db, 'activities'), {
       workingMemberId: workingMemberId,
       memberId: userId,
-      memberName: registerData.fullName.trim(),
+      memberName: formData.fullName.trim(),
       type: 'member_registration',
       commission: 0,
       levelChanged: false,
@@ -614,9 +587,9 @@ const [registerData, setRegisterData] = useState({
       id: registeredMemberRef.id,
       memberId: userId,
       workingMemberId: workingMemberId,
-      fullName: registerData.fullName.trim(),
-      email: registerData.email.trim().toLowerCase(),
-      phone: registerData.phone.trim(),
+      fullName: formData.fullName.trim(),
+      email: formData.email.trim().toLowerCase(),
+      phone: formData.phone.trim(),
       status: 'active',
       commission: 0,
       totalDonations: 0,
@@ -648,8 +621,9 @@ const [registerData, setRegisterData] = useState({
     console.log('✅ Working member logged out');
 
     // Build success message
+    // Build success message
     let successMessage = translations.memberRegistered + '\n\n';
-    successMessage += translations.memberRegisteredDetails.replace('{name}', registerData.fullName);
+    successMessage += translations.memberRegisteredDetails.replace('{name}', formData.fullName);
 
     console.log('🎉 Registration complete! Redirecting to Login...');
     
@@ -670,16 +644,6 @@ const [registerData, setRegisterData] = useState({
       panCard: null,
       profilePhoto: null,
       signature: null,
-    });
-    setRegisterData({
-      fullName: '',
-      email: '',
-      phone: '',
-      password: '',
-      confirmPassword: '',
-      gender: '',
-      dob: '',
-      address: '',
     });
     setStep(1);
     setRegisterModalVisible(false);

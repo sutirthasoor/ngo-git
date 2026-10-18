@@ -166,6 +166,20 @@ const [donationCertificates, setDonationCertificates] = useState([]);
   const [feeAmount, setFeeAmount] = useState('');
   const [feeNote, setFeeNote] = useState('');
   const [addingFee, setAddingFee] = useState(false);
+  // ===== Edit member =====
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editingMember, setEditingMember] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editForm, setEditForm] = useState({
+    fullName: '', email: '', phone: '', gender: '', dob: '',
+    fatherName: '', motherName: '', aadharNumber: '', panNumber: '',
+    address: '', village: '', postOffice: '', thana: '', district: '',
+    state: '', pinCode: '', position: '', department: '', employeeId: '',
+    reportingTo: '', role: 'member', status: 'active',
+    profilePhoto: '',
+    registrationFeePaid: false,
+    registrationFeeAmount: '',
+  });
 
   useEffect(() => {
     setupRealtimeListener();
@@ -189,11 +203,28 @@ const [donationCertificates, setDonationCertificates] = useState([]);
     let filtered = data;
 
     if (searchText) {
-      filtered = filtered.filter(member =>
-        member.fullName?.toLowerCase().includes(searchText.toLowerCase()) ||
-        member.email?.toLowerCase().includes(searchText.toLowerCase()) ||
-        member.phone?.includes(searchText)
-      );
+      const q = searchText.toLowerCase().trim();
+      filtered = filtered.filter(member => {
+        const haystack = [
+          member.fullName, member.name, member.email, member.phone,
+          member.phoneNumber, member.address, member.village, member.postOffice,
+          member.thana, member.district, member.state, member.pinCode,
+          member.pincode, member.aadharNumber, member.panNumber, member.gender,
+          member.dob, member.fatherName, member.motherName, member.role,
+          member.status, member.position, member.department, member.employeeId,
+          member.reportingTo, member.referralCode, member.registrationMethod,
+          String(member.registrationFeeAmount ?? ''),
+          member.registrationFeePaid ? 'paid' : 'not paid',
+          member.createdAt
+            ? new Date(member.createdAt?.seconds * 1000 || member.createdAt).toLocaleDateString()
+            : '',
+        ]
+          .filter(Boolean)
+          .map(v => String(v).toLowerCase())
+          .join(' ');
+
+        return haystack.includes(q);
+      });
     }
 
     if (filter !== 'All') {
@@ -437,7 +468,120 @@ const renderDonationCertificate = (member, cert) => (
       ]
     );
   };
+  // ================================================================
+  // EDIT: open + save
+  // ================================================================
+  const openEditMember = (member) => {
+    setEditingMember(member);
+    setEditForm({
+      fullName: member.fullName || '',
+      email: member.email || '',
+      phone: member.phone || '',
+      gender: member.gender || '',
+      dob: member.dob || '',
+      fatherName: member.fatherName || '',
+      motherName: member.motherName || '',
+      aadharNumber: member.aadharNumber || '',
+      panNumber: member.panNumber || '',
+      address: member.address || '',
+      village: member.village || '',
+      postOffice: member.postOffice || '',
+      thana: member.thana || '',
+      district: member.district || '',
+      state: member.state || '',
+      pinCode: member.pinCode || '',
+      position: member.position || '',
+      department: member.department || '',
+      employeeId: member.employeeId || '',
+      reportingTo: member.reportingTo || '',
+      role: member.role || 'member',
+      status: member.status || 'active',
+      profilePhoto: member.profilePhoto || '',
+      registrationFeePaid: !!member.registrationFeePaid,
+      registrationFeeAmount: String(member.registrationFeeAmount || ''),
+    });
+    setEditModalVisible(true);
+  };
 
+  const handleSaveEdit = async () => {
+    if (!editingMember) return;
+    if (!editForm.fullName.trim()) {
+      Alert.alert('Validation', 'Full name is required');
+      return;
+    }
+    if (!editForm.email.trim()) {
+      Alert.alert('Validation', 'Email is required');
+      return;
+    }
+
+    setSavingEdit(true);
+    try {
+      const payload = {
+        fullName: editForm.fullName.trim(),
+        email: editForm.email.trim().toLowerCase(),
+        phone: editForm.phone.trim(),
+        gender: editForm.gender,
+        dob: editForm.dob,
+        fatherName: editForm.fatherName.trim(),
+        motherName: editForm.motherName.trim(),
+        aadharNumber: editForm.aadharNumber.trim(),
+        panNumber: editForm.panNumber.trim(),
+        address: editForm.address.trim(),
+        village: editForm.village.trim(),
+        postOffice: editForm.postOffice.trim(),
+        thana: editForm.thana.trim(),
+        district: editForm.district.trim(),
+        state: editForm.state.trim(),
+        pinCode: editForm.pinCode.trim(),
+        position: editForm.position.trim(),
+        department: editForm.department.trim(),
+        employeeId: editForm.employeeId.trim(),
+        reportingTo: editForm.reportingTo.trim(),
+        role: editForm.role,
+        status: editForm.status,
+        profilePhoto: editForm.profilePhoto,
+        registrationFeePaid: !!editForm.registrationFeePaid,
+        registrationFeeAmount: parseFloat(editForm.registrationFeeAmount) || 0,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await updateDoc(doc(db, 'users', editingMember.id), payload);
+
+      // Sync registeredMembers if it exists
+      try {
+        const rmSnap = await getDocs(
+          query(collection(db, 'registeredMembers'), where('memberId', '==', editingMember.id))
+        );
+        if (!rmSnap.empty) {
+          await updateDoc(doc(db, 'registeredMembers', rmSnap.docs[0].id), {
+            fullName: payload.fullName,
+            email: payload.email,
+            phone: payload.phone,
+            address: payload.address,
+            gender: payload.gender,
+            dob: payload.dob,
+            updatedAt: payload.updatedAt,
+          });
+        }
+      } catch (e) {
+        console.warn('registeredMembers sync skipped:', e);
+      }
+
+      Alert.alert(translations.success, 'Member updated successfully');
+      setEditModalVisible(false);
+      setEditingMember(null);
+
+      // Refresh detail modal if open for this member
+      if (selectedMember?.id === editingMember.id) {
+        setSelectedMember({ ...selectedMember, ...payload });
+      }
+    } catch (e) {
+      console.error('handleSaveEdit:', e);
+      Alert.alert(translations.error, e.message || 'Failed to save');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
   // ============ ADD REGISTRATION FEE FUNCTION ============
   const handleAddRegistrationFee = async () => {
     console.log('🔵 handleAddRegistrationFee called');
@@ -1009,6 +1153,15 @@ const renderCertificateTemplate = (member, cert) => {
 
       <View style={styles.actionButtons}>
         <TouchableOpacity 
+          style={[styles.actionButton, styles.editButton]}
+          onPress={() => openEditMember(member)}
+          activeOpacity={0.7}
+        >
+          <MaterialIcons name="edit" size={14} color="#ffffff" />
+          <Text style={styles.actionButtonText}>Edit</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
           style={[styles.actionButton, styles.viewButton]}
           onPress={() => handleViewMember(member)}
           activeOpacity={0.7}
@@ -1016,7 +1169,7 @@ const renderCertificateTemplate = (member, cert) => {
           <MaterialIcons name="visibility" size={14} color="#ffffff" />
           <Text style={styles.actionButtonText}>{translations.view}</Text>
         </TouchableOpacity>
-        
+
         {member.role !== 'admin' && (
           <TouchableOpacity 
             style={[styles.actionButton, styles.feeButton]}
@@ -1032,7 +1185,7 @@ const renderCertificateTemplate = (member, cert) => {
             <Text style={styles.actionButtonText}>{translations.addFee}</Text>
           </TouchableOpacity>
         )}
-        
+
         {member.status !== 'active' && member.role !== 'admin' && (
           <TouchableOpacity 
             style={[styles.actionButton, styles.approveButton]}
@@ -1043,7 +1196,7 @@ const renderCertificateTemplate = (member, cert) => {
             <Text style={styles.actionButtonText}>{translations.approve}</Text>
           </TouchableOpacity>
         )}
-        
+
         {member.status !== 'suspended' && member.status !== 'active' && member.role !== 'admin' && (
           <TouchableOpacity 
             style={[styles.actionButton, styles.suspendButton]}
@@ -1054,7 +1207,7 @@ const renderCertificateTemplate = (member, cert) => {
             <Text style={styles.actionButtonText}>{translations.suspend}</Text>
           </TouchableOpacity>
         )}
-        
+
         {member.status === 'suspended' && member.role !== 'admin' && (
           <TouchableOpacity 
             style={[styles.actionButton, styles.reactivateButton]}
@@ -1065,7 +1218,7 @@ const renderCertificateTemplate = (member, cert) => {
             <Text style={styles.actionButtonText}>{translations.reactivate}</Text>
           </TouchableOpacity>
         )}
-        
+
         {member.role !== 'admin' && (
           <TouchableOpacity 
             style={[styles.actionButton, styles.deleteButton]}
@@ -1575,7 +1728,412 @@ const renderCertificateTemplate = (member, cert) => {
           </View>
         </View>
       </Modal>
+      {/* ============ EDIT MEMBER MODAL ============ */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={editModalVisible}
+        onRequestClose={() => !savingEdit && setEditModalVisible(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Member</Text>
+              <TouchableOpacity
+                onPress={() => !savingEdit && setEditModalVisible(false)}
+                disabled={savingEdit}
+              >
+                <MaterialIcons name="close" size={24} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
 
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: '80%' }}>
+              {/* Personal */}
+              <Text style={[styles.modalInfoLabel, { fontSize: 13, marginTop: 4, marginBottom: 6 }]}>
+                Personal Information
+              </Text>
+
+              <View style={styles.modalInfoItem}>
+                <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Full Name *</Text>
+                <TextInput
+                  style={[styles.modalInput, { fontSize: 14 }]}
+                  value={editForm.fullName}
+                  onChangeText={t => setEditForm({ ...editForm, fullName: t })}
+                  placeholder="Full name"
+                  placeholderTextColor="#9ca3af"
+                  editable={!savingEdit}
+                />
+              </View>
+
+              <View style={styles.modalInfoItem}>
+                <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Email *</Text>
+                <TextInput
+                  style={[styles.modalInput, { fontSize: 14 }]}
+                  value={editForm.email}
+                  onChangeText={t => setEditForm({ ...editForm, email: t })}
+                  placeholder="Email"
+                  placeholderTextColor="#9ca3af"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  editable={!savingEdit}
+                />
+              </View>
+
+              <View style={styles.modalInfoItem}>
+                <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Phone</Text>
+                <TextInput
+                  style={[styles.modalInput, { fontSize: 14 }]}
+                  value={editForm.phone}
+                  onChangeText={t => setEditForm({ ...editForm, phone: t })}
+                  placeholder="Phone"
+                  placeholderTextColor="#9ca3af"
+                  keyboardType="phone-pad"
+                  editable={!savingEdit}
+                />
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Gender</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.gender}
+                    onChangeText={t => setEditForm({ ...editForm, gender: t })}
+                    placeholder="Male/Female"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>DOB</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.dob}
+                    onChangeText={t => setEditForm({ ...editForm, dob: t })}
+                    placeholder="DD/MM/YYYY"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Father's Name</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.fatherName}
+                    onChangeText={t => setEditForm({ ...editForm, fatherName: t })}
+                    placeholder="Father's name"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Mother's Name</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.motherName}
+                    onChangeText={t => setEditForm({ ...editForm, motherName: t })}
+                    placeholder="Mother's name"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Aadhar</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.aadharNumber}
+                    onChangeText={t => setEditForm({ ...editForm, aadharNumber: t })}
+                    placeholder="Aadhar number"
+                    placeholderTextColor="#9ca3af"
+                    keyboardType="numeric"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>PAN</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.panNumber}
+                    onChangeText={t => setEditForm({ ...editForm, panNumber: t })}
+                    placeholder="PAN number"
+                    placeholderTextColor="#9ca3af"
+                    autoCapitalize="characters"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              {/* Address */}
+              <Text style={[styles.modalInfoLabel, { fontSize: 13, marginTop: 8, marginBottom: 6 }]}>
+                Address
+              </Text>
+
+              <View style={styles.modalInfoItem}>
+                <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Address</Text>
+                <TextInput
+                  style={[styles.modalInput, { fontSize: 14, minHeight: 50, textAlignVertical: 'top' }]}
+                  value={editForm.address}
+                  onChangeText={t => setEditForm({ ...editForm, address: t })}
+                  placeholder="Address"
+                  placeholderTextColor="#9ca3af"
+                  multiline
+                  editable={!savingEdit}
+                />
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Village</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.village}
+                    onChangeText={t => setEditForm({ ...editForm, village: t })}
+                    placeholder="Village"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Post Office</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.postOffice}
+                    onChangeText={t => setEditForm({ ...editForm, postOffice: t })}
+                    placeholder="Post Office"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Thana</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.thana}
+                    onChangeText={t => setEditForm({ ...editForm, thana: t })}
+                    placeholder="Thana"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>District</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.district}
+                    onChangeText={t => setEditForm({ ...editForm, district: t })}
+                    placeholder="District"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>State</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.state}
+                    onChangeText={t => setEditForm({ ...editForm, state: t })}
+                    placeholder="State"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>PIN</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.pinCode}
+                    onChangeText={t => setEditForm({ ...editForm, pinCode: t })}
+                    placeholder="PIN"
+                    placeholderTextColor="#9ca3af"
+                    keyboardType="numeric"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              {/* Work */}
+              <Text style={[styles.modalInfoLabel, { fontSize: 13, marginTop: 8, marginBottom: 6 }]}>
+                Work & Registration
+              </Text>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Position</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.position}
+                    onChangeText={t => setEditForm({ ...editForm, position: t })}
+                    placeholder="Position"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Department</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.department}
+                    onChangeText={t => setEditForm({ ...editForm, department: t })}
+                    placeholder="Department"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Employee ID</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.employeeId}
+                    onChangeText={t => setEditForm({ ...editForm, employeeId: t })}
+                    placeholder="Employee ID"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Reporting To</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.reportingTo}
+                    onChangeText={t => setEditForm({ ...editForm, reportingTo: t })}
+                    placeholder="Reporting to"
+                    placeholderTextColor="#9ca3af"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <View style={[styles.modalInfoItem, { flex: 1 }]}>
+                  <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Fee Paid</Text>
+                  <TextInput
+                    style={[styles.modalInput, { fontSize: 14 }]}
+                    value={editForm.registrationFeeAmount}
+                    onChangeText={t => setEditForm({ ...editForm, registrationFeeAmount: t, registrationFeePaid: parseFloat(t) > 0 })}
+                    placeholder="Fee amount (₹)"
+                    placeholderTextColor="#9ca3af"
+                    keyboardType="numeric"
+                    editable={!savingEdit}
+                  />
+                </View>
+              </View>
+
+              {/* Role */}
+              <View style={styles.modalInfoItem}>
+                <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Role</Text>
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  {[
+                    { key: 'member', label: 'Member' },
+                    { key: 'workingMember', label: 'Working' },
+                    { key: 'admin', label: 'Admin' },
+                  ].map(r => {
+                    const active = editForm.role === r.key;
+                    return (
+                      <TouchableOpacity
+                        key={r.key}
+                        onPress={() => setEditForm({ ...editForm, role: r.key })}
+                        disabled={savingEdit}
+                        style={{
+                          flex: 1,
+                          paddingVertical: 8,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: active ? '#FF7722' : '#e5e7eb',
+                          backgroundColor: active ? '#FF7722' : '#ffffff',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{
+                          fontFamily: Fonts.SemiBold,
+                          fontSize: 12,
+                          color: active ? '#ffffff' : '#6b7280',
+                        }}>
+                          {r.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* Status */}
+              <View style={styles.modalInfoItem}>
+                <Text style={[styles.modalInfoLabel, { fontSize: 12 }]}>Status</Text>
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  {[
+                    { key: 'active', label: 'Active' },
+                    { key: 'pending', label: 'Pending' },
+                    { key: 'suspended', label: 'Suspended' },
+                  ].map(s => {
+                    const active = editForm.status === s.key;
+                    return (
+                      <TouchableOpacity
+                        key={s.key}
+                        onPress={() => setEditForm({ ...editForm, status: s.key })}
+                        disabled={savingEdit}
+                        style={{
+                          flex: 1,
+                          paddingVertical: 8,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: active ? '#10b981' : '#e5e7eb',
+                          backgroundColor: active ? '#10b981' : '#ffffff',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Text style={{
+                          fontFamily: Fonts.SemiBold,
+                          fontSize: 12,
+                          color: active ? '#ffffff' : '#6b7280',
+                        }}>
+                          {s.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            </ScrollView>
+
+            {/* Save / Cancel */}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+              <TouchableOpacity
+                onPress={() => !savingEdit && setEditModalVisible(false)}
+                disabled={savingEdit}
+                style={[styles.modalActionButton, styles.modalCancelButton, { flex: 1 }]}
+              >
+                <Text style={styles.modalCancelText}>{translations.cancel}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSaveEdit}
+                disabled={savingEdit}
+                style={[styles.modalActionButton, { backgroundColor: '#FF7722', flex: 1 }, savingEdit && { opacity: 0.6 }]}
+              >
+                {savingEdit ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <Text style={styles.modalActionText}>Save Changes</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
       {/* Add Registration Fee Modal */}
       <Modal
         animationType="slide"
@@ -1958,6 +2516,9 @@ const styles = StyleSheet.create({
   },
   viewButton: {
     backgroundColor: '#FF7722',
+  },
+  editButton: {
+    backgroundColor: '#3b82f6',
   },
   feeButton: {
     backgroundColor: '#8b5cf6',
