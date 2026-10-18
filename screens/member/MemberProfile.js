@@ -517,69 +517,80 @@ export default function MemberProfile({ navigation }) {
         </View>
 
         {/* Identity Card */}
-        <View style={styles.idCardWrapper}>
-          <View ref={cardRef} collapsable={false} style={styles.idCardContainer}>
-            <View style={styles.idCard}>
-              {/* Background PNG Template */}
-              <Image 
-                source={require('../../assets/images/id-card-template.png')}
-                style={styles.idCardTemplateImage}
-                resizeMode="stretch"
-              />
-              
-              {/* Overlay Content - Responsive */}
-              <View style={styles.idCardOverlay}>
-                {/* Personal Details */}
-                <View style={styles.idCardDetailsContainer}>
-                  <View style={[styles.idCardFieldRow, { marginTop: responsiveHeight(80) }]}>
-                    <Text style={styles.idCardFieldValue} numberOfLines={1}>{formData.fullName || translations.nA}</Text>
-                  </View>
-                  
-                  <View style={styles.idCardFieldRow}>
-                    <Text style={styles.idCardFieldValue} numberOfLines={1}>{formData.fatherName || translations.nA}</Text>
-                  </View>
-                  
-                  <View style={styles.idCardFieldRow}>
-                    <Text style={styles.idCardFieldValue} numberOfLines={1}>{formData.dob || translations.nA}</Text>
-                  </View>
-                  
-                  <View style={styles.idCardFieldRow}>
-                    <Text style={styles.idCardFieldValue} numberOfLines={1}>{formData.aadharNumber || translations.nA}</Text>
-                  </View>
-                  
-                  <View style={styles.idCardFieldRow}>
-                    <Text style={[styles.idCardFieldValue, styles.idCardStatusValue]} numberOfLines={1}>
-                      {getStatusLabel(formData.membershipStatus)}
-                    </Text>
-                  </View>
-                  
-                  <View style={styles.idCardFieldRow}>
-                    <Text style={styles.idCardFieldValue} numberOfLines={1}>{formData.phone || translations.nA}</Text>
-                  </View>
-                  
-                  <View style={styles.idCardFieldRow}>
-                    <Text style={styles.idCardFieldValue} numberOfLines={2}>{formData.address || translations.nA}</Text>
-                  </View>
-                </View>
-                
-                {/* Photo - Right Side */}
-                <View style={styles.idCardPhotoContainer}>
-                  <View style={styles.idCardPhotoWrapper}>
-                    {formData.profilePhoto ? (
-                      <Image source={{ uri: formData.profilePhoto }} style={styles.idCardPhoto} />
-                    ) : (
-                      <View style={styles.idCardPhotoPlaceholder}>
-                        <MaterialIcons name="person" size={responsiveFont(40)} color="#8b5cf6" />
-                      </View>
-                    )}
-                  </View>
-                  <Text style={styles.idCardPhotoLabel}>{translations.idCardPhoto}</Text>
-                </View>
-                
-              </View>
-            </View>
+<View style={styles.idCardWrapper}>
+  <View ref={cardRef} collapsable={false} style={styles.idCardContainer}>
+    <View style={styles.idCard}>
+      {/* Background Template */}
+      <Image
+        source={require('../../assets/images/id-card-template.png')}
+        style={styles.idCardTemplateImage}
+        resizeMode="stretch"
+      />
+
+      {/* Overlay Content */}
+      <View style={styles.idCardOverlay}>
+        {/* Personal Details — left column */}
+        <View style={styles.idCardDetailsContainer}>
+          <View style={styles.idCardFieldRow}>
+            <Text style={styles.idCardFieldValue} numberOfLines={1}>
+              {formData.fullName || translations.nA}
+            </Text>
+          </View>
+
+          <View style={styles.idCardFieldRow}>
+            <Text style={styles.idCardFieldValue} numberOfLines={1}>
+              {formData.fatherName || translations.nA}
+            </Text>
+          </View>
+
+          <View style={styles.idCardFieldRow}>
+            <Text style={styles.idCardFieldValue} numberOfLines={1}>
+              {formData.dob || translations.nA}
+            </Text>
+          </View>
+
+          <View style={styles.idCardFieldRow}>
+            <Text style={styles.idCardFieldValue} numberOfLines={1}>
+              {formData.aadharNumber || translations.nA}
+            </Text>
+          </View>
+
+          <View style={styles.idCardFieldRow}>
+            <Text style={[styles.idCardFieldValue, styles.idCardStatusValue]} numberOfLines={1}>
+              {getStatusLabel(formData.membershipStatus)}
+            </Text>
+          </View>
+
+          <View style={styles.idCardFieldRow}>
+            <Text style={styles.idCardFieldValue} numberOfLines={1}>
+              {formData.phone || translations.nA}
+            </Text>
+          </View>
+
+          <View style={styles.idCardFieldRow}>
+            <Text style={[styles.idCardFieldValue, styles.idCardAddressValue]} numberOfLines={2}>
+              {formData.address || translations.nA}
+            </Text>
           </View>
         </View>
+
+        {/* Photo — right column */}
+        <View style={styles.idCardPhotoContainer}>
+          <View style={styles.idCardPhotoWrapper}>
+            {formData.profilePhoto ? (
+              <Image source={{ uri: formData.profilePhoto }} style={styles.idCardPhoto} />
+            ) : (
+              <View style={styles.idCardPhotoPlaceholder}>
+                <MaterialIcons name="person" size={28} color="#8b5cf6" />
+              </View>
+            )}
+          </View>
+          <Text style={styles.idCardPhotoLabel}>{translations.idCardPhoto}</Text>
+        </View>
+      </View>
+    </View>
+  </View>
+</View>
 
         {/* ID Card Download Button */}
         <TouchableOpacity style={styles.downloadButton} onPress={handleDownloadIDCard} activeOpacity={0.7}>
@@ -1145,16 +1156,18 @@ const styles = StyleSheet.create({
     fontSize: responsiveFont(20),
     color: '#1f2937',
     marginTop: responsiveHeight(8),
-    maxWidth: responsiveWidth(width - 60),
+    maxWidth: width - 60,
   },
   profileBio: {
     fontFamily: Fonts.Regular,
     fontSize: responsiveFont(14),
     color: '#6b7280',
-    maxWidth: responsiveWidth(width - 60),
+    maxWidth: width - 60,
   },
 
-  // Identity Card - Responsive
+  // ============================================================
+  // ID CARD — all sizing is relative to the CARD, not the screen
+  // ============================================================
   idCardWrapper: {
     marginBottom: responsiveHeight(16),
     alignItems: 'center',
@@ -1166,67 +1179,64 @@ const styles = StyleSheet.create({
   },
   idCardContainer: {
     width: isWeb ? 400 : width - 32,
-    borderRadius: responsiveWidth(12),
+    maxWidth: 500,
+    aspectRatio: 1.6,               // lock the card shape (credit-card-ish)
+    borderRadius: 12,
     overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+    backgroundColor: '#ffffff',
   },
   idCard: {
-    width: '100%',
-    aspectRatio: 1.6,
-    backgroundColor: '#ffffff',
+    flex: 1,
     position: 'relative',
     overflow: 'hidden',
   },
   idCardTemplateImage: {
+    ...StyleSheet.absoluteFillObject,
     width: '100%',
     height: '100%',
-    position: 'absolute',
-    top: 0,
-    left: 0,
   },
   idCardOverlay: {
-    flex: 1,
-    padding: responsiveWidth(16),
-    position: 'relative',
-    zIndex: 1,
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: 'row',
+    paddingHorizontal: '5%',
+    paddingVertical: '4%',
   },
   idCardDetailsContainer: {
-    flex: 1,
+    flex: 1,                        // left column (~65%)
     justifyContent: 'center',
-    paddingRight: responsiveWidth(100),
-    paddingLeft: responsiveWidth(8),
-    paddingTop: responsiveHeight(4),
-    paddingBottom: responsiveHeight(4),
+    paddingRight: '2%',
   },
   idCardFieldRow: {
-    flexDirection: 'row',
-    marginBottom: responsiveHeight(2),
-    alignItems: 'center',
+    marginBottom: '2.5%',
   },
   idCardFieldValue: {
     fontFamily: Fonts.Regular,
-    fontSize: responsiveFont(8),
-    marginLeft: responsiveWidth(100),
+    // Font size = 3% of the card's actual pixel width, clamped to a floor.
+    fontSize: Math.max(9, (isWeb ? 400 : width - 32) * 0.030),
     color: '#1f2937',
-    flex: 1,
+    // 42% indent pushes the value text past the printed labels on the template.
+    paddingLeft: '42%',
   },
   idCardStatusValue: {
     color: '#10b981',
     fontFamily: Fonts.SemiBold,
   },
+  idCardAddressValue: {
+    paddingLeft: '42%',
+  },
   idCardPhotoContainer: {
-    position: 'absolute',
-    right: responsiveWidth(16),
-    top: '40%',
+    width: '30%',                   // right column
     alignItems: 'center',
+    justifyContent: 'center',
   },
   idCardPhotoWrapper: {
-    width: responsiveWidth(75),
-    height: responsiveHeight(95),
+    width: '90%',
+    aspectRatio: 0.78,              // passport-photo ratio (taller than wide)
     borderRadius: 4,
     borderWidth: 1,
     borderColor: '#d1d5db',
@@ -1247,10 +1257,12 @@ const styles = StyleSheet.create({
   },
   idCardPhotoLabel: {
     fontFamily: Fonts.Regular,
-    fontSize: responsiveFont(8),
+    fontSize: Math.max(8, (isWeb ? 400 : width - 32) * 0.022),
     color: '#6b7280',
-    marginTop: responsiveHeight(2),
+    marginTop: '4%',
   },
+
+  // Kept for backwards compatibility (no longer used by the JSX above)
   idCardFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1627,6 +1639,25 @@ const styles = StyleSheet.create({
     left: '16%',
     width: '60%',
   },
+  certificateAddressValue: {
+    fontFamily: Fonts.Regular,
+    fontSize: responsiveFont(11),
+    color: '#000000',
+    textDecorationLine: 'underline',
+  },
+  certificateTypeRow: {
+    position: 'absolute',
+    top: '56%',
+    left: '61%',
+    width: '35%',
+  },
+  certificateTypeValue: {
+    fontFamily: Fonts.SemiBold,
+    fontSize: responsiveFont(14),
+    color: '#000000',
+    textDecorationLine: 'underline',
+  },
+
   // Donation Certificate Styles
   donationCertificateContainer: {
     width: '100%',
@@ -1744,24 +1775,6 @@ const styles = StyleSheet.create({
     color: '#999',
     textAlign: 'center',
     marginTop: responsiveHeight(8),
-  },
-  certificateAddressValue: {
-    fontFamily: Fonts.Regular,
-    fontSize: responsiveFont(11),
-    color: '#000000',
-    textDecorationLine: 'underline',
-  },
-  certificateTypeRow: {
-    position: 'absolute',
-    top: '56%',
-    left: '61%',
-    width: '35%',
-  },
-  certificateTypeValue: {
-    fontFamily: Fonts.SemiBold,
-    fontSize: responsiveFont(14),
-    color: '#000000',
-    textDecorationLine: 'underline',
   },
 
   // More Settings Button

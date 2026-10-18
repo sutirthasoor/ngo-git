@@ -31,15 +31,9 @@ ios/
 build/
 
 # Environment variables
-.env
-.env.local
-.env.development
-.env.production
-.env.test
 *.env
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -84,3 +78,4 @@ firebase-debug.log
 *.orig
 *.rej
 *.patch
+config.bat
